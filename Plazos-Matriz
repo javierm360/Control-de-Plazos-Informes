@@ -1,0 +1,125 @@
+from datetime import datetime, timedelta
+import time
+import pandas as pd
+from pandas.tseries.offsets import BDay
+import numpy as np
+from pandas.tseries.offsets import CustomBusinessDay
+
+ruta_matriz = "../data/Matriz_Departamento.xlsx"
+
+#Leemos la matriz
+matriz = pd.read_excel(ruta_matriz)
+
+matriz['Fecha de asignación'] = pd.to_datetime(matriz['Fecha de asignación'], errors='coerce').dt.date
+matriz['Fecha inicio informe'] = pd.to_datetime(matriz['Fecha inicio informe'], errors='coerce').dt.date
+
+#Identificamos la fecha del día actual
+fecha_actual = pd.Timestamp.today()
+
+#Creamos una nueva columna con la fecha limite de referencia para los retrasos
+matriz['Fecha limite'] = matriz['Fecha inicio informe'] + BDay(10)
+#Días feriados en República Dominicana para el año 2026
+feriados_rd = [
+    '2026-01-01',
+    '2026-01-06',
+    '2026-01-21',
+    '2026-01-26',
+    '2026-02-27',
+    '2026-04-03',
+    '2026-05-01',
+    '2026-06-04',
+    '2026-09-24',
+    '2026-11-06',
+    '2026-12-25',
+]
+feriados_rd = np.array(feriados_rd, dtype='datetime64[D]')
+feriados = CustomBusinessDay(holidays=feriados_rd)
+
+# Compendio de reglamentos y procedimientos para autorizaciones ambientales de la República Dominicana
+dias_reglamento = 10
+
+
+def dias_retraso(fila, feriados, dias_reglamento):
+    """
+    Calcula los días de retraso y el tiempo total de desarrollo de un informe técnico.
+
+    A partir de la fecha de inicio del informe y la fecha de entrega para
+    retroalimentación, la función determina:
+    - La cantidad de días hábiles de retraso del técnico respecto al plazo
+      establecido por reglamento.
+    - El tiempo total de desarrollo del informe en días hábiles.
+
+    El cálculo considera únicamente días laborables definidos mediante un
+    calendario personalizado de feriados.
+
+    Parámetros
+    ----------
+    fila : pandas.Series
+        Fila del DataFrame que contiene la información del informe.
+        Debe incluir las columnas:
+        - 'Fecha inicio informe'
+        - 'Fecha entrega de Informe para retroalimentación'
+    feriados : pandas.tseries.offsets.CustomBusinessDay
+        Objeto que define los días hábiles excluyendo feriados.
+    dias_reglamento : int, opcional
+        Número de días hábiles permitidos para la entrega del informe.
+        Por defecto es 11.
+
+    Retorna
+    -------
+    pandas.Series
+        Serie con los siguientes campos:
+        - 'Dias de retraso por el técnico': número de días hábiles de retraso
+          (nunca negativo).
+        - 'Tiempo desarrollo Informe': número total de días hábiles transcurridos
+          desde el inicio del informe hasta la entrega o la fecha actual.
+    """
+    fecha_actual = pd.Timestamp.today().normalize()
+    fecha_inicio = fila['Fecha inicio informe']
+    fecha_entrega = fila['Fecha entrega de Informe para retroalimentación']
+
+    if pd.isna(fecha_inicio):
+        return pd.Series({'Dias de retraso por el técnico': 0,
+                          'Tiempo desarrollo Informe': 0})
+
+    fecha_limite = fecha_inicio + dias_reglamento * feriados
+
+    if pd.isna(fecha_entrega):
+        dias_retraso = len(pd.date_range(start=fecha_inicio, end=fecha_actual, freq=feriados)) - dias_reglamento
+    else:
+        dias_retraso = len(pd.date_range(start=fecha_inicio, end=fecha_entrega, freq=feriados)) - dias_reglamento
+
+    if pd.notna(fecha_entrega):
+        tiempo_desarrollo = len(pd.date_range(start=fecha_inicio, end=fecha_entrega, freq=feriados))
+    else:
+        tiempo_desarrollo = len(pd.date_range(start=fecha_inicio, end=fecha_actual, freq=feriados))
+
+    return pd.Series({'Dias de retraso por el técnico': max(0, dias_retraso),
+                      'Tiempo desarrollo Informe': tiempo_desarrollo})
+
+#Aplicamos la función 
+matriz[['Dias de retraso por el técnico', 'Tiempo desarrollo Informe']] = \
+    matriz.apply(lambda fila: dias_retraso(fila, feriados, dias_reglamento), axis=1)
+
+#Agregamos una columna categorica con la información de "Retrasado" y "A tiempo" en el caso que aplique
+matriz['Estado de informe'] = np.where(
+    matriz['Tiempo desarrollo Informe'] > 11,
+    'Retrasado',
+    'A tiempo'
+)
+#colocamos la columna en formato de año-mes-dia (sin horas, minutos y segundos para mejor comprensión)
+columnas_fechas = [
+    'Fecha de asignación',
+    'Fecha inicio informe',
+    'Fecha entrega de Informe para retroalimentación',
+    'Fecha de retroalimentación',
+    'Fecha limite'
+]
+
+for col in columnas_fechas:
+    if col in matriz.columns:
+        matriz[col] = pd.to_datetime(matriz[col], errors='coerce').dt.date
+
+# Guardamos la matriz actualizada de manera automatica
+ruta_guardado = "../data/Matriz_Departamento.xlsx"
+matriz.to_excel(ruta_guardado, index=False)    
